@@ -7,7 +7,7 @@
 // 5. Copy the config values from "SDK setup and configuration" > "Config"
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 // Firebase configuration
@@ -33,6 +33,10 @@ if (isFirebaseConfigured) {
     
     // Initialize Firebase Authentication and get a reference to the service
     auth = getAuth(app);
+    // Set persistence to localStorage so auth state persists across page refreshes
+    setPersistence(auth, browserLocalPersistence).catch((error) => {
+      console.error("Error setting auth persistence:", error);
+    });
     googleProvider = new GoogleAuthProvider();
     
     // Initialize Cloud Firestore and get a reference to the service

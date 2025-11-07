@@ -256,9 +256,12 @@ export default function App() {
     }
   }
 
-  // Update minimum price when currency changes (only if no cart items to avoid overwriting user settings)
+  // Track if we're loading settings to prevent overwriting
+  const isLoadingSettingsRef = useRef(false);
+
+  // Update minimum price when currency changes (only if not loading settings and no cart items)
   useEffect(() => {
-    if (cart.length === 0) {
+    if (cart.length === 0 && !isLoadingSettingsRef.current) {
       setMinimumSurchargeAmount(CURRENCIES[currency].defaultMin);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -272,7 +275,15 @@ export default function App() {
   // ===== Authentication & Settings =====
   // Save settings to Firestore
   async function saveSettings() {
-    if (!user || !db) return;
+    if (!user || !db) {
+      console.log("Cannot save settings: user or db not available", { user: !!user, db: !!db });
+      return;
+    }
+    
+    if (isInitialLoadRef.current) {
+      console.log("Skipping save: initial load in progress");
+      return;
+    }
     
     setSaving(true);
     try {
@@ -298,30 +309,49 @@ export default function App() {
         updatedAt: new Date().toISOString(),
       };
       
+      console.log("Saving settings to Firestore for user:", user.uid);
+      console.log("Settings data:", settings);
       await setDoc(doc(db, "users", user.uid), settings, { merge: true });
+      console.log("✅ Settings saved successfully to Firestore!");
     } catch (error) {
       console.error("Error saving settings:", error);
+      // Show user-friendly error message
+      alert("Failed to save settings. Please check the browser console for details.");
     } finally {
       setSaving(false);
     }
   }
 
   // Load settings from Firestore
-  async function loadSettings() {
-    if (!user || !db) return;
+  async function loadSettings(userToLoad = null) {
+    // Use provided user or fall back to state user
+    const currentUser = userToLoad || user;
+    if (!currentUser || !db) {
+      console.log("Cannot load settings: user or db not available", { 
+        user: !!currentUser, 
+        userId: currentUser?.uid, 
+        db: !!db 
+      });
+      return;
+    }
     
     try {
-      const docRef = doc(db, "users", user.uid);
+      console.log("Starting to load settings for user:", currentUser.uid);
+      isLoadingSettingsRef.current = true;
+      isInitialLoadRef.current = true; // Prevent auto-save during load
+      
+      const docRef = doc(db, "users", currentUser.uid);
+      console.log("Fetching document from Firestore:", `users/${currentUser.uid}`);
       const docSnap = await getDoc(docRef);
       
       if (docSnap.exists()) {
         const data = docSnap.data();
-        isInitialLoadRef.current = true; // Prevent auto-save during load
+        console.log("Settings found in Firestore, loading:", data);
         
-        // Load settings
-        if (data.currency) setCurrency(data.currency);
-        if (data.overrides) setOverrides(data.overrides);
-        if (data.customLabel) setCustomLabel(data.customLabel);
+        // Load settings - batch state updates for better performance
+        if (data.currency !== undefined) setCurrency(data.currency);
+        if (data.overrides !== undefined) setOverrides(data.overrides);
+        if (data.customLabel !== undefined) setCustomLabel(data.customLabel);
         if (data.customWeightRateTHB !== undefined) setCustomWeightRateTHB(data.customWeightRateTHB);
         if (data.customTimeRateTHB !== undefined) setCustomTimeRateTHB(data.customTimeRateTHB);
         if (data.customWeightRateUSD !== undefined) setCustomWeightRateUSD(data.customWeightRateUSD);
@@ -336,14 +366,35 @@ export default function App() {
         if (data.colorSurchargeEnabled !== undefined) setColorSurchargeEnabled(data.colorSurchargeEnabled);
         if (data.colorSurchargePercentage !== undefined) setColorSurchargePercentage(data.colorSurchargePercentage);
         if (data.minimumSurchargeEnabled !== undefined) setMinimumSurchargeEnabled(data.minimumSurchargeEnabled);
-        if (data.minimumSurchargeAmount !== undefined) setMinimumSurchargeAmount(data.minimumSurchargeAmount);
         
-        setTimeout(() => {
-          isInitialLoadRef.current = false;
-        }, 1000);
+        // Load minimum surcharge amount after a brief delay to ensure currency is set
+        if (data.minimumSurchargeAmount !== undefined) {
+          setTimeout(() => {
+            setMinimumSurchargeAmount(data.minimumSurchargeAmount);
+          }, 200);
+        }
+        
+        console.log("All settings loaded successfully");
+      } else {
+        console.log("No settings document found in Firestore for user:", currentUser.uid);
+        console.log("This is normal for first-time users. Settings will be created when you make changes.");
       }
+      
+      // Wait for state updates to complete before enabling auto-save
+      setTimeout(() => {
+        isLoadingSettingsRef.current = false;
+        isInitialLoadRef.current = false;
+        console.log("Settings loading complete. Auto-save is now enabled.");
+      }, 1000);
     } catch (error) {
-      console.error("Error loading settings:", error);
+      console.error("Error loading settings from Firestore:", error);
+      console.error("Error details:", {
+        code: error.code,
+        message: error.message,
+        userId: currentUser.uid
+      });
+      isLoadingSettingsRef.current = false;
+      isInitialLoadRef.current = false;
     }
   }
 
@@ -379,7 +430,10 @@ export default function App() {
 
   // Auto-save settings when they change (debounced)
   useEffect(() => {
-    if (!user || isInitialLoadRef.current) return;
+    // Don't save if no user, if loading settings, or if Firebase isn't ready
+    if (!user || !db || isInitialLoadRef.current || isLoadingSettingsRef.current) {
+      return;
+    }
     
     // Clear existing timeout
     if (saveTimeoutRef.current) {
@@ -398,6 +452,7 @@ export default function App() {
     };
   }, [
     user,
+    db,
     currency,
     overrides,
     customLabel,
@@ -418,7 +473,7 @@ export default function App() {
     minimumSurchargeAmount,
   ]);
 
-  // Monitor authentication state
+  // Monitor authentication state and load settings on page load/refresh
   useEffect(() => {
     if (!auth) {
       setLoading(false);
@@ -426,10 +481,25 @@ export default function App() {
     }
     
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      console.log("Auth state changed:", currentUser ? "Logged in" : "Logged out", currentUser?.uid);
       setUser(currentUser);
       setLoading(false);
-      if (currentUser) {
-        await loadSettings();
+      
+      if (currentUser && db) {
+        console.log("User authenticated, loading settings for:", currentUser.uid);
+        // Ensure db is ready, then load settings
+        try {
+          // Wait a bit for auth to fully initialize, then load settings with the current user
+          await new Promise(resolve => setTimeout(resolve, 200));
+          await loadSettings(currentUser);
+        } catch (error) {
+          console.error("Error in auth state change handler:", error);
+        }
+      } else {
+        // Reset loading flags when user logs out
+        isLoadingSettingsRef.current = false;
+        isInitialLoadRef.current = false;
+        console.log("User logged out, resetting settings flags");
       }
     });
     
