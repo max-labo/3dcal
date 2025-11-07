@@ -1,4 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { auth, googleProvider, db } from "./firebase";
 
 // ===== Currency Configuration =====
 const CURRENCIES = {
@@ -119,6 +122,13 @@ export default function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorKey, setEditorKey] = useState(null); // 'PETG' | 'CUSTOM' ...
   const [editorDraft, setEditorDraft] = useState({ label: "", weightTHB: 0, timeTHB: 0, weightUSD: 0, timeUSD: 0, weightJPY: 0, timeJPY: 0, weightEUR: 0, timeEUR: 0 });
+
+  // Authentication state
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const saveTimeoutRef = useRef(null);
+  const isInitialLoadRef = useRef(true);
 
   // Build materials list with overrides applied; insert Custom AFTER PAHT-CF
   // Material rates are currency-aware (all currencies are independent)
@@ -258,6 +268,174 @@ export default function App() {
     setShowCurrencyWarning(false);
     setPendingCurrency(null);
   }
+
+  // ===== Authentication & Settings =====
+  // Save settings to Firestore
+  async function saveSettings() {
+    if (!user || !db) return;
+    
+    setSaving(true);
+    try {
+      const settings = {
+        currency,
+        overrides,
+        customLabel,
+        customWeightRateTHB,
+        customTimeRateTHB,
+        customWeightRateUSD,
+        customTimeRateUSD,
+        customWeightRateJPY,
+        customTimeRateJPY,
+        customWeightRateEUR,
+        customTimeRateEUR,
+        discountEnabled,
+        discountThreshold,
+        discountPercentage,
+        colorSurchargeEnabled,
+        colorSurchargePercentage,
+        minimumSurchargeEnabled,
+        minimumSurchargeAmount,
+        updatedAt: new Date().toISOString(),
+      };
+      
+      await setDoc(doc(db, "users", user.uid), settings, { merge: true });
+    } catch (error) {
+      console.error("Error saving settings:", error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Load settings from Firestore
+  async function loadSettings() {
+    if (!user || !db) return;
+    
+    try {
+      const docRef = doc(db, "users", user.uid);
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        isInitialLoadRef.current = true; // Prevent auto-save during load
+        
+        // Load settings
+        if (data.currency) setCurrency(data.currency);
+        if (data.overrides) setOverrides(data.overrides);
+        if (data.customLabel) setCustomLabel(data.customLabel);
+        if (data.customWeightRateTHB !== undefined) setCustomWeightRateTHB(data.customWeightRateTHB);
+        if (data.customTimeRateTHB !== undefined) setCustomTimeRateTHB(data.customTimeRateTHB);
+        if (data.customWeightRateUSD !== undefined) setCustomWeightRateUSD(data.customWeightRateUSD);
+        if (data.customTimeRateUSD !== undefined) setCustomTimeRateUSD(data.customTimeRateUSD);
+        if (data.customWeightRateJPY !== undefined) setCustomWeightRateJPY(data.customWeightRateJPY);
+        if (data.customTimeRateJPY !== undefined) setCustomTimeRateJPY(data.customTimeRateJPY);
+        if (data.customWeightRateEUR !== undefined) setCustomWeightRateEUR(data.customWeightRateEUR);
+        if (data.customTimeRateEUR !== undefined) setCustomTimeRateEUR(data.customTimeRateEUR);
+        if (data.discountEnabled !== undefined) setDiscountEnabled(data.discountEnabled);
+        if (data.discountThreshold !== undefined) setDiscountThreshold(data.discountThreshold);
+        if (data.discountPercentage !== undefined) setDiscountPercentage(data.discountPercentage);
+        if (data.colorSurchargeEnabled !== undefined) setColorSurchargeEnabled(data.colorSurchargeEnabled);
+        if (data.colorSurchargePercentage !== undefined) setColorSurchargePercentage(data.colorSurchargePercentage);
+        if (data.minimumSurchargeEnabled !== undefined) setMinimumSurchargeEnabled(data.minimumSurchargeEnabled);
+        if (data.minimumSurchargeAmount !== undefined) setMinimumSurchargeAmount(data.minimumSurchargeAmount);
+        
+        setTimeout(() => {
+          isInitialLoadRef.current = false;
+        }, 1000);
+      }
+    } catch (error) {
+      console.error("Error loading settings:", error);
+    }
+  }
+
+  // Handle Google login
+  async function handleGoogleLogin() {
+    if (!auth || !googleProvider) {
+      alert("Firebase is not configured. Please set up Firebase to enable login.\n\nSee src/firebase.js for setup instructions.");
+      return;
+    }
+    try {
+      await signInWithPopup(auth, googleProvider);
+      // Settings will be loaded automatically via useEffect when user state changes
+    } catch (error) {
+      console.error("Error signing in:", error);
+      if (error.code === 'auth/popup-closed-by-user') {
+        // User closed the popup, no need to show error
+        return;
+      }
+      alert("Failed to sign in. Please check your Firebase configuration.");
+    }
+  }
+
+  // Handle logout
+  async function handleLogout() {
+    if (!auth) return;
+    try {
+      await signOut(auth);
+      // Reset to defaults (or keep current settings for guest mode)
+    } catch (error) {
+      console.error("Error signing out:", error);
+    }
+  }
+
+  // Auto-save settings when they change (debounced)
+  useEffect(() => {
+    if (!user || isInitialLoadRef.current) return;
+    
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    
+    // Set new timeout to save after 2 seconds of inactivity
+    saveTimeoutRef.current = setTimeout(() => {
+      saveSettings();
+    }, 2000);
+    
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [
+    user,
+    currency,
+    overrides,
+    customLabel,
+    customWeightRateTHB,
+    customTimeRateTHB,
+    customWeightRateUSD,
+    customTimeRateUSD,
+    customWeightRateJPY,
+    customTimeRateJPY,
+    customWeightRateEUR,
+    customTimeRateEUR,
+    discountEnabled,
+    discountThreshold,
+    discountPercentage,
+    colorSurchargeEnabled,
+    colorSurchargePercentage,
+    minimumSurchargeEnabled,
+    minimumSurchargeAmount,
+  ]);
+
+  // Monitor authentication state
+  useEffect(() => {
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
+    
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+      if (currentUser) {
+        await loadSettings();
+      }
+    });
+    
+    return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ===== Actions =====
   async function copySummary(e) {
@@ -479,7 +657,7 @@ export default function App() {
           {/* Header */}
           <header className="mb-3 flex items-center justify-between">
             <div>
-              <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">3D Print Cost Calculator</h1>
+              <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">3D Print Cost Calculator 1.0</h1>
             </div>
             <div className="flex items-center gap-2">
               <select
@@ -492,6 +670,53 @@ export default function App() {
                 <option value="USD">USD ($)</option>
                 <option value="EUR">EUR (€)</option>
               </select>
+              
+              {/* User Authentication */}
+              {loading ? (
+                <div className="w-8 h-8 rounded-full border-2 border-neutral-700 border-t-neutral-400 animate-spin"></div>
+              ) : user ? (
+                <div className="flex items-center gap-2">
+                  {saving && (
+                    <span className="text-xs text-neutral-400 hidden sm:inline">Saving...</span>
+                  )}
+                  <div className="flex items-center gap-2 px-2 py-1 rounded-lg border border-neutral-800 bg-neutral-900">
+                    {user.photoURL ? (
+                      <img 
+                        src={user.photoURL} 
+                        alt={user.displayName || "User"} 
+                        className="w-6 h-6 rounded-full"
+                      />
+                    ) : (
+                      <div className="w-6 h-6 rounded-full bg-neutral-700 flex items-center justify-center text-xs">
+                        {user.displayName ? user.displayName.charAt(0).toUpperCase() : "U"}
+                      </div>
+                    )}
+                    <span className="text-xs text-neutral-300 hidden sm:inline max-w-[120px] truncate">
+                      {user.displayName || user.email}
+                    </span>
+                    <button
+                      onClick={handleLogout}
+                      className="text-xs text-neutral-400 hover:text-neutral-200 transition-colors"
+                      title="Sign out"
+                    >
+                      Sign out
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handleGoogleLogin}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-800 bg-neutral-900 text-sm text-neutral-100 hover:bg-neutral-800 transition-colors"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                  </svg>
+                  <span className="hidden sm:inline">Sign in</span>
+                </button>
+              )}
             </div>
           </header>
 
