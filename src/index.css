@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+@theme {
+  --color-glass-dark: rgba(23, 23, 23, 0.4);
+  --color-glass-border: rgba(255, 255, 255, 0.08);
+  --color-glass-highlight: rgba(255, 255, 255, 0.04);
+}
+
+body {
+  background-color: #050505;
+  background-image: 
+    radial-gradient(circle at 15% 50%, rgba(13, 148, 136, 0.08), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(79, 70, 229, 0.12), transparent 25%);
+  background-attachment: fixed;
+}
